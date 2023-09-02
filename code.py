@@ -7,7 +7,7 @@ import usb_hid
 from adafruit_hid.keyboard import Keyboard
 from adafruit_hid.keyboard_layout_us import KeyboardLayoutUS
 from adafruit_hid.keycode import Keycode
-from key_layout import layout, Fn
+from key_layout import simple_layout, Fn
 from Key_Definition import KeyDefinition
 from Pin_Config import PinConfig
 
@@ -103,7 +103,16 @@ def process_delta(keys, keyboard, delta):
             elif action == RELEASE:
                 emit = key.release()
             if emit is not None:
-                send_key(key, keyboard, emit, modifiers)
+                emit_key(key, keyboard, emit)
+
+
+def emit_key(key: KeyDefinition, keyboard: Keyboard, key_code: int):
+    if key_code == -1:
+        keyboard.press(key.base_keycode)
+    elif key_code == 0:
+        keyboard.release(key.base_keycode)
+    else:
+        print("shouldn't get here")
 
 
 def send_key(key: KeyDefinition, keyboard: Keyboard, key_code: int, modifier: list):
@@ -164,7 +173,7 @@ def loop(keys, config, keyboard, grid_a, grid_b):
 
 
 def main():
-    keys = layout()
+    keys = simple_layout()
     use_config = PinConfig(
         digitalio.DriveMode.PUSH_PULL, True, False, digitalio.Pull.UP, False
     )
