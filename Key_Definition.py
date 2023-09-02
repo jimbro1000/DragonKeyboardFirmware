@@ -20,7 +20,9 @@ class KeyDefinition(object):
         grid_b,
         modifier=0,
         keycode=None,
+        base_string=None,
         shift_keycode=None,
+        shift_string=None,
         fn_keycode=None,
         cancel_shift=False,
         invert_shift=False,
@@ -30,7 +32,9 @@ class KeyDefinition(object):
         self.is_modifier = not modifier == 0
         self.modifier_keycode = modifier
         self.base_keycode = keycode
+        self.base_string = base_string
         self.shift_base_keycode = shift_keycode
+        self.shift_string = shift_string
         self.fn_keycode = fn_keycode
         self.output_a = grid_a
         self.input_b = grid_b
@@ -53,6 +57,9 @@ class KeyDefinition(object):
     def matches_id(self, key_id):
         return self.key_id == key_id
 
+    def is_pressed(self):
+        return self.state == "PRESSED"
+
     # mark key as pressed
     # accomodate fn modifier if needed
     #
@@ -67,6 +74,8 @@ class KeyDefinition(object):
             return self.fn_keycode
         else:
             self.with_fn = False
+            if self.invert_shift or self.unshift or self.cancel_shift:
+                return -2
             return -1
 
     # mark key as held and determine response
@@ -91,6 +100,8 @@ class KeyDefinition(object):
             self.last_output = timestamp
             if self.with_fn:
                 return self.fn_keycode
+            elif self.invert_shift or self.unshift or self.cancel_shift:
+                return -3
             else:
                 return -1
         return None
@@ -101,4 +112,6 @@ class KeyDefinition(object):
         self.state = "OPEN"
         self.last_output = 0
         self.with_fn = False
+        if not self.shift_base_keycode == None:
+            return -4
         return 0

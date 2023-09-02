@@ -2,26 +2,32 @@ import time
 import board
 import digitalio
 import usb_hid
+# import supervisor
 
 from adafruit_hid.keyboard import Keyboard
 from adafruit_hid.keyboard_layout_us import KeyboardLayoutUS
 from adafruit_hid.keycode import Keycode
 from key_layout import layout, Fn
 from Key_Definition import KeyDefinition
+from Pin_Config import PinConfig
 
 
 SLEEP_TIME = 0.002
+PRESS = 1
+HOLD = 2
+RELEASE = 3
+OPEN = 0
 
 
-def scan(inkeys, outkeys):
+def scan(inkeys, outkeys, config):
     result = []
     for row in outkeys:
-        row.value = True
+        row.value = config.poll
         row_result = []
         for column in inkeys:
-            row_result.append(column.value)
+            row_result.append(column.value == config.detect)
         result.append(row_result)
-        row.value = False
+        row.value = config.default
     return result
 
 
@@ -32,15 +38,15 @@ def compare_scan(current, previous):
         delta.append([])
         i = 0
         for keys in row:
-            result = ""
+            result = OPEN
             if current[j][i]:
                 if previous[j][i]:
-                    result = "HOLD"
+                    result = HOLD
                 else:
-                    result = "PRESS"
+                    result = PRESS
             else:
                 if previous[j][i]:
-                    result = "RELEASE"
+                    result = RELEASE
             delta[j].append(result)
             i += 1
         j += 1
@@ -58,11 +64,11 @@ def report_grid(current, delta):
         result += "] ["
         for j in range(8):
             x = delta[i][j]
-            if x == "PRESS":
+            if x == PRESS:
                 result += "1"
-            elif x == "HOLD":
+            elif x == HOLD:
                 result += "2"
-            elif x == "RELEASE":
+            elif x == RELEASE:
                 result += "3"
             else:
                 result += "0"
@@ -76,21 +82,25 @@ def process_delta(keys, keyboard, delta):
     for key in keys:
         action = delta[key.output_a][key.input_b]
         if key.is_modifier:
-            # handle fn, ctrl and shift
-            # print("modifier")
             if key.modifier_keycode == Fn:
-                fn = True
+                fn = action == PRESS or action == HOLD
             else:
-                modifiers.append(key.modifier_keycode)
-                key.press(fn)
-                send_key(key, keyboard, key.modifier_keycode, [])
+                if action == PRESS:
+                    modifiers.append(key.modifier_keycode)
+                    key.press(fn)
+                    keyboard.press(key.modifier_keycode)
+                elif action == HOLD:
+                    modifiers.append(key.modifier_keycode)
+                elif action == RELEASE:
+                    key.release()
+                    keyboard.release(key.modifier_keycode)
         else:
             emit = None
-            if action == "PRESS":
+            if action == PRESS:
                 emit = key.press(fn)
-            elif action == "HOLD":
+            elif action == HOLD:
                 emit = key.hold(fn)
-            elif action == "RELEASE":
+            elif action == RELEASE:
                 emit = key.release()
             if emit is not None:
                 send_key(key, keyboard, emit, modifiers)
@@ -99,13 +109,26 @@ def process_delta(keys, keyboard, delta):
 def send_key(key: KeyDefinition, keyboard: Keyboard, key_code: int, modifier: list):
     if key_code == -1:
         keyboard.press(key.base_keycode)
+        print("press " + key.key_id)
     elif key_code == 0:
         keyboard.release(key.base_keycode)
+        print("release " + key.key_id)
+    elif key_code == -3:
+        # nop
+        print("fake release " + key.key_id)
+    elif key_code == -4:
+        keyboard.release(key.shift_base_keycode)
     else:
-        if Keycode.SHIFT in modifier and key.shift_base_keycode is not None:
-            key_code = key.shift_base_keycode
+        if Keycode.SHIFT in modifier:
+            if key.shift_base_keycode is not None:
+                key_code = key.shift_base_keycode
+            else:
+                key_code = key.base_keycode
+            print("shift " + key.key_id)
         else:
             key_code = key.base_keycode
+            print("noshift " + key.key_id)
+
         if key.cancel_shift or key.invert_shift or key.unshift:
             if Keycode.SHIFT in modifier:
                 if key.cancel_shift or key.unshift:
@@ -115,6 +138,7 @@ def send_key(key: KeyDefinition, keyboard: Keyboard, key_code: int, modifier: li
                     keyboard.press(Keycode.SHIFT)
                 else:
                     keyboard.press(key_code)
+                    keyboard.release(key_code)
             else:
                 if key.invert_shift:
                     keyboard.press(Keycode.SHIFT)
@@ -123,16 +147,17 @@ def send_key(key: KeyDefinition, keyboard: Keyboard, key_code: int, modifier: li
                     keyboard.release(Keycode.SHIFT)
                 else:
                     keyboard.press(key_code)
+                    keyboard.release(key_code)
 
 
-def loop(keys, keyboard, grid_a, grid_b):
+def loop(keys, config, keyboard, grid_a, grid_b):
     grid_previous = None
     while True:
-        grid = scan(grid_a, grid_b)
+        grid = scan(grid_a, grid_b, config)
         delta = grid
         if grid_previous is not None:
             delta = compare_scan(grid, grid_previous)
-        report_grid(grid, delta)
+        # report_grid(grid, delta)
         process_delta(keys, keyboard, delta)
         grid_previous = grid
         time.sleep(SLEEP_TIME)
@@ -140,6 +165,10 @@ def loop(keys, keyboard, grid_a, grid_b):
 
 def main():
     keys = layout()
+    use_config = PinConfig(
+        digitalio.DriveMode.PUSH_PULL, True, False, digitalio.Pull.UP, False
+    )
+
     output_pins = [
         board.GP0,
         board.GP1,
@@ -149,7 +178,7 @@ def main():
         board.GP5,
         board.GP6,
     ]
-    grid_a = []
+    grid_a = use_config.setup_output(output_pins)
     input_pins = [
         board.GP7,
         board.GP8,
@@ -160,70 +189,14 @@ def main():
         board.GP13,
         board.GP14,
     ]
-    grid_b = []
-
-    for pin in output_pins:
-        key = digitalio.DigitalInOut(pin)
-        key.direction = digitalio.Direction.OUTPUT
-        key.drive_mode = digitalio.DriveMode.PUSH_PULL
-        grid_a.append(key)
-
-    for pin in input_pins:
-        key = digitalio.DigitalInOut(pin)
-        key.direction = digitalio.Direction.INPUT
-        key.pull = digitalio.Pull.DOWN
-        grid_b.append(key)
+    grid_b = use_config.setup_input(input_pins)
 
     keyboard = Keyboard(usb_hid.devices)
     KeyboardLayoutUS(keyboard)
 
     print("entering infinite scan loop")
 
-    loop(keys, keyboard, grid_b, grid_a)
+    loop(keys, use_config, keyboard, grid_b, grid_a)
 
-    applied = []
-    while True:
-        modifier = []
-        fn = False
-        for key in keys:
-            keycode = 0
-            grid_a[key.output_a].value = True
-            result = grid_b[key.input_b].value
-            grid_a[key.output_a].value = False
-            if result:
-                if key.is_modifier:
-                    fn = key.modifier_keycode == Fn
-                    if not fn:
-                        modifier.append(key.modifier_keycode)
-                else:
-                    print(key.base_keycode)
-                    if fn:
-                        keycode = key.fn_keycode
-                    elif (
-                        Keycode.SHIFT in modifier and key.shift_base_keycode is not None
-                    ):
-                        keycode = key.shift_base_keycode
-                    else:
-                        keycode = key.base_keycode
-                if Keycode.SHIFT in modifier:
-                    if key.invert_shift or key.cancel_shift or key.unshift:
-                        applied = []
-                    else:
-                        applied = [Keycode.SHIFT]
-                else:
-                    if key.invert_shift:
-                        applied = [Keycode.SHIFT]
-
-                if Keycode.CONTROL in modifier:
-                    applied.append(Keycode.CONTROL)
-                if not keycode == 0:
-                    applied.append(keycode)
-                    for press in applied:
-                        keyboard.press(press)
-                    keyboard.release_all()
-                    applied = []
-
-        time.sleep(SLEEP_TIME)
-
-
+# supervisor.runtime.autoreload = False
 main()
